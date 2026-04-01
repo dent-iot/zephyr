@@ -1,0 +1,5 @@
+# Copyright (c) 2026 David van Rijn Dent-Iot
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_PURETHERMAL3
+	select SOC_STM32F412ZX

@@ -1,0 +1,6 @@
+board:
+  name: purethermal3
+  full_name: PURETHERMAL 3
+  vendor: groupgets
+  socs:
+    - name: stm32f412zx
