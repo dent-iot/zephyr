@@ -88,6 +88,18 @@ int lbm_lora_common_init(const struct device *dev);
 void lbm_driver_antenna_configure(const struct device *dev, enum lbm_modem_mode mode);
 
 /**
+ * @brief Re-arm the driver's interrupt line after IRQ processing has completed
+ *
+ * Weak default no-op. Overridden by bus implementations that must mask their
+ * interrupt for the duration of IRQ processing, e.g. an internally-routed NVIC
+ * line that stays asserted until the radio's IRQ status is cleared over SPI,
+ * and would otherwise re-fire continuously while the work item is pending.
+ *
+ * @param dev Modem to re-arm
+ */
+void lbm_lora_irq_rearm(const struct device *dev);
+
+/**
  * @brief Control a GPIO pin if it has been configured
  *
  * @param spec GPIO specification from devicetree

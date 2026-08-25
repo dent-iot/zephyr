@@ -10,6 +10,12 @@ else()
 endif()
 
 zephyr_library_sources(lbm_common.c)
-zephyr_library_sources_ifdef(CONFIG_LORA_SX126X lbm_sx126x.c)
+
+if(CONFIG_LORA_SX126X OR CONFIG_LORA_STM32WL_SUBGHZ_RADIO)
+  zephyr_library_sources(lbm_sx126x.c)
+endif()
+zephyr_library_sources_ifdef(CONFIG_LORA_SX126X lbm_sx126x_standalone.c)
+zephyr_library_sources_ifdef(CONFIG_LORA_STM32WL_SUBGHZ_RADIO lbm_sx126x_stm32wl.c)
+
 zephyr_library_sources_ifdef(CONFIG_LORA_SX127X lbm_sx127x.c)
 zephyr_library_sources_ifdef(CONFIG_LORA_RYLRXXX ../rylrxxx.c)

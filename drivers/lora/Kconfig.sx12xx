@@ -19,7 +19,7 @@ config LORA_SX126X
 	bool "Semtech SX126x driver"
 	default y
 	depends on DT_HAS_SEMTECH_SX1261_ENABLED || DT_HAS_SEMTECH_SX1262_ENABLED
-	select HAS_SEMTECH_SX126X
+	select HAS_SEMTECH_SX126X if LORA_MODULE_BACKEND_LORAMAC_NODE
 	select SPI
 	select GPIO
 	help
@@ -29,7 +29,7 @@ config LORA_STM32WL_SUBGHZ_RADIO
 	bool "STM32WL SUBGHZ radio driver"
 	default y
 	depends on DT_HAS_ST_STM32WL_SUBGHZ_RADIO_ENABLED
-	select HAS_SEMTECH_SX126X
+	select HAS_SEMTECH_SX126X if LORA_MODULE_BACKEND_LORAMAC_NODE
 	select SPI
 	select GPIO
 	help

@@ -16,6 +16,11 @@
 
 LOG_MODULE_REGISTER(lbm_driver, CONFIG_LORA_LOG_LEVEL);
 
+__weak void lbm_lora_irq_rearm(const struct device *dev)
+{
+	ARG_UNUSED(dev);
+}
+
 /**
  * @brief Attempt to acquire the modem for operations
  *
@@ -492,6 +497,10 @@ static void op_done_work_handler(struct k_work *work)
 	/* Get and reset the current IRQ state */
 	(void)ral_get_irq_status(&config->ralf.ral, &irq_state);
 	(void)ral_clear_irq_status(&config->ralf.ral, RAL_IRQ_ALL);
+	/* Now that the radio's own IRQ status has been cleared over SPI, it is safe for
+	 * bus implementations that mask their interrupt line during processing to unmask it.
+	 */
+	lbm_lora_irq_rearm(dev);
 	error_irq = irq_state & (RAL_IRQ_RX_TIMEOUT | RAL_IRQ_RX_HDR_ERROR | RAL_IRQ_RX_CRC_ERROR);
 
 	/* Release the modem before running the user callback so that the notified thread can
