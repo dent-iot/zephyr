@@ -1,0 +1,19 @@
+# Copyright (c) 2026 Dent IoT
+# SPDX-License-Identifier: Apache-2.0
+
+config PULSE_IO_STM32_TIMER_DMA
+	bool "STM32 Pulse IO backend (timer + DMA to GPIO)"
+	depends on DT_HAS_ST_STM32_PULSE_IO_ENABLED
+	select DMA
+	select CLOCK_CONTROL_STM32_CUBE if SOC_FAMILY_STM32
+	help
+	  Pulse IO backend for STM32 that generates timed edges on an
+	  arbitrary GPIO pin by driving the GPIO port's BSRR register via
+	  DMA, triggered by a timer update event. This needs no alternate
+	  function on the pin and is jitter-free, since the wire timing
+	  is entirely hardware-driven.
+
+	  The timer instance, DMA stream/request, and target GPIO port
+	  and pin are configured in the device tree. On STM32F405/407 the
+	  DMA controller must be DMA2 (DMA1 cannot reach GPIO AHB1); use a
+	  timer routed to DMA2 such as TIM1 or TIM8.
