@@ -43,13 +43,14 @@ struct pulse_io_stm32_config {
 	size_t buf_size;
 };
 
-inline static uint32_t set_mask(const struct pulse_io_stm32_config * config){
-	return (uint32_t) config->mask;
+static inline uint32_t set_mask(const struct pulse_io_stm32_config *config)
+{
+	return (uint32_t)config->mask;
 }
 
-
-inline static uint32_t reset_mask(const struct pulse_io_stm32_config * config){
-	return (uint32_t) config->mask << 16;
+static inline uint32_t reset_mask(const struct pulse_io_stm32_config *config)
+{
+	return (uint32_t)config->mask << 16;
 }
 
 
@@ -97,7 +98,7 @@ static int pulse_io_stm32_channel_get(const struct device *dev,
 				      uint8_t channel_idx,
 				      struct pulse_io_channel **chan)
 {
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	struct pulse_io_stm32_data *data = dev->data;
 
 	if (channel_idx != 0U) {
 		return -ENODEV;
@@ -116,7 +117,7 @@ static int pulse_io_stm32_channel_get(const struct device *dev,
 static int pulse_io_stm32_channel_release(const struct device *dev,
 					 struct pulse_io_channel *chan)
 {
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	struct pulse_io_stm32_data *data = dev->data;
 
 	ARG_UNUSED(chan);
 
@@ -134,8 +135,8 @@ static int pulse_io_stm32_channel_configure(const struct device *dev,
 					    struct pulse_io_channel *chan,
 					    const struct pulse_io_config *cfg)
 {
-	const struct pulse_io_stm32_config *config =(const struct pulse_io_stm32_config *) dev->config;
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 	TIM_TypeDef *timer = config->timer;
 	const struct device *clk;
 	uint32_t tim_clk;
@@ -234,8 +235,8 @@ static void pulse_io_stm32_dma_callback(const struct device *dma_dev,
 					int status)
 {
 	const struct device *dev = (const struct device *) user_data;
-	const struct pulse_io_stm32_config *config = (const struct pulse_io_stm32_config *) dev->config;
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *)dev->data;
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 
 	ARG_UNUSED(dma_dev);
 	ARG_UNUSED(channel);
@@ -268,8 +269,8 @@ static size_t pulse_io_stm32_encode(const struct device *dev,
 				    const struct pulse_cell *cells, size_t count,
 				    uint32_t *buf, size_t cap)
 {
-	const struct pulse_io_stm32_config *config = (const struct pulse_io_stm32_config *) dev->config;
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 	size_t n = 0U;
 	uint32_t period = data->cell_period_ticks;
 	uint32_t set = set_mask(config);
@@ -307,8 +308,8 @@ static int pulse_io_stm32_transmit_sync(const struct device *dev,
 					const struct pulse_io_tx_req *req,
 					k_timeout_t timeout)
 {
-	const struct pulse_io_stm32_config *config = (const struct pulse_io_stm32_config *) dev->config;
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 	size_t words;
 	int ret;
 
@@ -334,7 +335,7 @@ static int pulse_io_stm32_transmit_sync(const struct device *dev,
 	/* Arm the DMA transfer: memory -> BSRR, 32-bit, memory increment,
 	 * peripheral fixed. The DMA is triggered by the timer update event.
 	 */
-	memset(&data->block, 0, sizeof data->block);
+	memset(&data->block, 0, sizeof(data->block));
 	data->block.source_address = (uint32_t)(uintptr_t)data->buf;
 	data->block.dest_address   = (uint32_t)(uintptr_t)config->bsrr;
 	data->block.block_size = words * sizeof(uint32_t);
@@ -402,8 +403,8 @@ static int pulse_io_stm32_receive_sync(const struct device *dev,
 static int pulse_io_stm32_stop(const struct device *dev,
 			      struct pulse_io_channel *chan)
 {
-	const struct pulse_io_stm32_config *config = (const struct pulse_io_stm32_config *) dev->config;
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 
 	ARG_UNUSED(chan);
 
@@ -430,8 +431,8 @@ static DEVICE_API(pulse_io, pulse_io_stm32_api) = {
 
 static int pulse_io_stm32_init(const struct device *dev)
 {
-	const struct pulse_io_stm32_config *config = (const struct pulse_io_stm32_config *) dev->config;
-	struct pulse_io_stm32_data *data = (struct pulse_io_stm32_data *) dev->data;
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 	const struct device *clk;
 	int ret;
 
