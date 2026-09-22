@@ -74,7 +74,8 @@ struct pulse_io_stm32_data {
 static int pulse_io_stm32_get_capabilities(const struct device *dev,
 					   struct pulse_io_caps *caps)
 {
-	ARG_UNUSED(dev);
+	const struct pulse_io_stm32_config *config = dev->config;
+	struct pulse_io_stm32_data *data = dev->data;
 
 	*caps = (struct pulse_io_caps){
 		.tx_min_chunk_symbols = 1U,
@@ -82,7 +83,7 @@ static int pulse_io_stm32_get_capabilities(const struct device *dev,
 		.modes = PULSE_IO_MODE_CELL,
 		.min_tick_ns = 100U,
 		.max_tick_ns = 1000000U,
-		.max_duration_ticks = 0xFFFFU,
+		.max_duration_ticks = config->buf_size / 2,
 		.tx_loop_max = 0U,
 		.tx_channel_mask = BIT(0),
 		.rx_channel_mask = 0U,
