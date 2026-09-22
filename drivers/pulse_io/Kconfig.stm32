@@ -11,4 +11,3 @@ config PULSE_IO_STM32_TIMER_DMA
 	  Pulse IO backend for STM32 that generates timed edges on an
 	  arbitrary GPIO pin by driving the GPIO port's BSRR register via
 	  DMA, triggered by a timer update event.
-

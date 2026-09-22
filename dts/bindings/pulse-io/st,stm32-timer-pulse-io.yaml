@@ -22,11 +22,6 @@ description: |
   all configured in the device tree, so the binding is not tied to a
   particular timer instance or pin.
 
-  Note that on STM32F405/407 only DMA2 can reach GPIO (DMA1 has no AHB1
-  tap); timer instances routed to DMA1 (TIM6/TIM7) therefore cannot be
-  used with this backend on those parts. TIM1 (DMA2 stream5/channel6 =
-  TIM1_UP) or TIM8 (DMA2 stream1/channel7 = TIM8_UP) are the usual choices.
-
 compatible: "st,stm32-timer-pulse-io"
 
 include: [base.yaml, pulse-io-controller.yaml]

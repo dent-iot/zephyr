@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <sys/errno.h>
 #define DT_DRV_COMPAT st_stm32_timer_pulse_io
 
 #include <zephyr/device.h>
@@ -122,7 +123,7 @@ static int pulse_io_stm32_channel_release(const struct device *dev,
 	ARG_UNUSED(chan);
 
 	if (!data->in_use) {
-		return -EINVAL;
+		return -EBUSY;
 	}
 
 	data->in_use = false;
@@ -200,6 +201,20 @@ static int pulse_io_stm32_channel_configure(const struct device *dev,
 			"st,prescaler)", arr, cfg->resolution_hz);
 		return -EINVAL;
 	}
+
+
+	if (!gpio_is_ready_dt(&config->gpio)) {
+		LOG_ERR("GPIO device not ready");
+		return -ENODEV;
+	}
+
+	ret = gpio_pin_configure_dt(&config->gpio, GPIO_OUTPUT);
+	if (ret != 0) {
+		LOG_ERR("GPIO pin configure failed (%d)", ret);
+		return ret;
+	}
+
+	*config->bsrr = reset_mask(config);
 
 	LL_TIM_SetPrescaler(timer, config->prescaler);
 	LL_TIM_SetAutoReload(timer, arr);
@@ -445,16 +460,6 @@ static int pulse_io_stm32_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	if (!gpio_is_ready_dt(&config->gpio)) {
-		LOG_ERR("GPIO device not ready");
-		return -ENODEV;
-	}
-
-	ret = gpio_pin_configure_dt(&config->gpio, GPIO_OUTPUT);
-	if (ret != 0) {
-		LOG_ERR("GPIO pin configure failed (%d)", ret);
-		return ret;
-	}
 
 	/* Enable the timer clock. */
 	clk = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
@@ -478,8 +483,6 @@ static int pulse_io_stm32_init(const struct device *dev)
 		}
 	}
 
-	/* Park the line at idle (low) before any transfer. */
-	*config->bsrr = reset_mask(config);
 
 	return 0;
 }
