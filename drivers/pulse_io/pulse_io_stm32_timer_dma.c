@@ -507,7 +507,7 @@ static int pulse_io_stm32_init(const struct device *dev)
 		.pclken = pulse_io_stm32_pclken_##inst,                             \
 		.pclk_len = DT_NUM_CLOCKS(DT_PHANDLE(DT_DRV_INST(inst), timer)),    \
 		.prescaler = DT_INST_PROP_OR(inst, st_prescaler, 0),                \
-		.dma_dev = DEVICE_DT_GET(DT_INST_DMAS_CTLR(inst)),                  \
+		.dma_dev = DT_INST_DMAS_CTLR(inst, dmas),   \
 		.dma_channel = DT_INST_DMAS_CELL_BY_NAME(inst, tx, channel),        \
 		.dma_slot = DT_INST_DMAS_CELL_BY_NAME(inst, tx, slot),              \
 		.gpio = GPIO_DT_SPEC_INST_GET(inst, gpios),                         \
@@ -526,3 +526,4 @@ static int pulse_io_stm32_init(const struct device *dev)
 			      &pulse_io_stm32_api);
 
 DT_INST_FOREACH_STATUS_OKAY(PULSE_IO_STM32_INIT)
+
