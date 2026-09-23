@@ -295,10 +295,6 @@ static struct ethernet_context *ethernet_mcast_ctx(struct net_if *iface)
 		return NULL;
 	}
 
-	if (!(net_eth_get_hw_capabilities(iface) & ETHERNET_HW_FILTERING)) {
-		return NULL;
-	}
-
 	return net_if_l2_data(iface);
 }
 
@@ -398,7 +394,11 @@ out:
 	if (program) {
 		ret = ethernet_mcast_filter_set(iface, addr, true);
 		if (ret == -ENOTSUP) {
-			ret = 0;
+			return 0;
+		}
+
+		if (ret < 0) {
+			(void)net_eth_mcast_addr_rm(iface, addr);
 		}
 	}
 
@@ -867,10 +867,16 @@ static struct net_buf *ethernet_fill_header(struct ethernet_context *ctx,
 		net_pkt_vlan_tag(pkt) != NET_VLAN_TAG_UNSPEC;
 
 	reserve_ll_header = get_reserve_ll_header_size(is_vlan);
-	if (reserve_ll_header > 0) {
+	if ((reserve_ll_header > 0) && (reserve_ll_header <= net_buf_headroom(pkt->buffer))) {
 		hdr_len = reserve_ll_header;
 		hdr_frag = pkt->buffer;
 	} else {
+		/*
+		 * Packets can be allocated by a different L2 and forwarded to
+		 * Ethernet. Such packets do not have the Ethernet header space
+		 * reserved by ethernet_l2_alloc(), so use a separate fragment.
+		 */
+		reserve_ll_header = 0U;
 		hdr_len = IS_ENABLED(CONFIG_NET_VLAN) ?
 			sizeof(struct net_eth_vlan_hdr) :
 			sizeof(struct net_eth_hdr);
@@ -1278,14 +1284,6 @@ const struct device *z_impl_net_eth_get_ptp_clock_by_index(int index)
 
 	return net_eth_get_ptp_clock(iface);
 }
-
-#ifdef CONFIG_USERSPACE
-static inline const struct device *z_vrfy_net_eth_get_ptp_clock_by_index(int index)
-{
-	return z_impl_net_eth_get_ptp_clock_by_index(index);
-}
-#include <zephyr/syscalls/net_eth_get_ptp_clock_by_index_mrsh.c>
-#endif /* CONFIG_USERSPACE */
 #else /* CONFIG_PTP_CLOCK */
 const struct device *z_impl_net_eth_get_ptp_clock_by_index(int index)
 {
@@ -1294,6 +1292,14 @@ const struct device *z_impl_net_eth_get_ptp_clock_by_index(int index)
 	return NULL;
 }
 #endif /* CONFIG_PTP_CLOCK */
+
+#ifdef CONFIG_USERSPACE
+static inline const struct device *z_vrfy_net_eth_get_ptp_clock_by_index(int index)
+{
+	return z_impl_net_eth_get_ptp_clock_by_index(index);
+}
+#include <zephyr/syscalls/net_eth_get_ptp_clock_by_index_mrsh.c>
+#endif /* CONFIG_USERSPACE */
 
 #if defined(CONFIG_NET_PROMISCUOUS_MODE)
 int net_eth_promisc_mode(struct net_if *iface, bool enable)
@@ -1356,11 +1362,6 @@ void ethernet_init(struct net_if *iface)
 	NET_DBG("Initializing Ethernet L2 %p for iface %d (%p)", ctx,
 		net_if_get_by_iface(iface), iface);
 
-#if defined(CONFIG_NET_DSA)
-	/* DSA port may need to handle flags */
-	dsa_eth_init(iface);
-#endif
-
 	if (IS_ENABLED(CONFIG_ETH_NET_IF_NO_AUTO_START)) {
 		/* Do not start Ethernet interface automatically */
 		net_if_flag_set(iface, NET_IF_NO_AUTO_START);
@@ -1375,6 +1376,11 @@ void ethernet_init(struct net_if *iface)
 	if ((caps & ETHERNET_PROMISC_MODE) != 0) {
 		ctx->ethernet_l2_flags |= NET_L2_PROMISC_MODE;
 	}
+
+#if defined(CONFIG_NET_DSA)
+	/* DSA port may need to handle flags */
+	dsa_eth_init(iface);
+#endif
 
 #if defined(NET_ETH_MCAST_FILTER_SUPPORTED) && defined(CONFIG_NET_NATIVE_IP)
 	if ((caps & ETHERNET_HW_FILTERING) != 0) {

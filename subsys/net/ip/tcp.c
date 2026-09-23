@@ -45,9 +45,9 @@ static int tcp_rx_window =
 	CONFIG_NET_TCP_MAX_RECV_WINDOW_SIZE;
 #else
 #if defined(CONFIG_NET_BUF_FIXED_DATA_SIZE)
-	(CONFIG_NET_BUF_RX_COUNT * CONFIG_NET_BUF_DATA_SIZE) / 3;
+	MIN((CONFIG_NET_BUF_RX_COUNT * CONFIG_NET_BUF_DATA_SIZE) / 3, UINT16_MAX);
 #else
-	CONFIG_NET_PKT_BUF_RX_DATA_POOL_SIZE / 3;
+	MIN(CONFIG_NET_PKT_BUF_RX_DATA_POOL_SIZE / 3, UINT16_MAX);
 #endif /* CONFIG_NET_BUF_FIXED_DATA_SIZE */
 #endif
 static int tcp_tx_window =
@@ -55,9 +55,9 @@ static int tcp_tx_window =
 	CONFIG_NET_TCP_MAX_SEND_WINDOW_SIZE;
 #else
 #if defined(CONFIG_NET_BUF_FIXED_DATA_SIZE)
-	(CONFIG_NET_BUF_TX_COUNT * CONFIG_NET_BUF_DATA_SIZE) / 3;
+	MIN((CONFIG_NET_BUF_TX_COUNT * CONFIG_NET_BUF_DATA_SIZE) / 3, UINT16_MAX);
 #else
-	CONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE / 3;
+	MIN(CONFIG_NET_PKT_BUF_TX_DATA_POOL_SIZE / 3, UINT16_MAX);
 #endif /* CONFIG_NET_BUF_FIXED_DATA_SIZE */
 #endif
 #ifdef CONFIG_NET_TCP_RANDOMIZED_RTO
@@ -149,7 +149,7 @@ static int tcp_pkt_linearize(struct net_pkt *pkt, size_t pos, size_t len)
 
 	buf = net_pkt_get_frag(pkt, len, TCP_PKT_ALLOC_TIMEOUT);
 
-	if (!buf || net_buf_max_len(buf) < len) {
+	if (!buf || net_buf_tailroom(buf) < len) {
 		if (buf) {
 			net_buf_unref(buf);
 		}
@@ -157,7 +157,7 @@ static int tcp_pkt_linearize(struct net_pkt *pkt, size_t pos, size_t len)
 		goto out;
 	}
 
-	net_buf_linearize(buf->data, net_buf_max_len(buf), pkt->frags, pos, len);
+	net_buf_linearize(buf->data, net_buf_tailroom(buf), pkt->frags, pos, len);
 	net_buf_add(buf, len);
 
 	len1 = first->len - (pkt->cursor.pos - pkt->cursor.buf->data);
@@ -1001,7 +1001,7 @@ static int tcp_conn_close(struct tcp *conn, int status)
 		}
 
 		conn->in_connect = false;
-		k_sem_reset(&conn->connect_sem);
+		k_sem_give(&conn->connect_sem);
 	} else if (conn->context->recv_cb) {
 		conn->context->recv_cb(conn->context, NULL, NULL, NULL,
 				       status, conn->recv_user_data);
@@ -3882,7 +3882,7 @@ int net_tcp_put(struct net_context *context, bool force_close)
 		}
 	} else if (conn->in_connect && conn->state != TCP_CLOSED && conn->state != TCP_UNUSED) {
 		conn->in_connect = false;
-		k_sem_reset(&conn->connect_sem);
+		k_sem_give(&conn->connect_sem);
 		tcp_conn_close(conn, -ECONNABORTED);
 	}
 
@@ -4215,8 +4215,11 @@ int net_tcp_connect(struct net_context *context,
 		} else if ((K_TIMEOUT_EQ(timeout, K_NO_WAIT)) && conn->state != TCP_ESTABLISHED) {
 			ret = -EINPROGRESS;
 			goto out;
-		} else if (k_sem_take(&conn->connect_sem, timeout) != 0 &&
-			   conn->state != TCP_ESTABLISHED) {
+		}
+
+		(void)k_sem_take(&conn->connect_sem, timeout);
+
+		if (conn->state != TCP_ESTABLISHED) {
 			if (conn->in_connect) {
 				conn->in_connect = false;
 				tcp_conn_close(conn, -ETIMEDOUT);
@@ -4229,6 +4232,7 @@ int net_tcp_connect(struct net_context *context,
 			}
 			goto out;
 		}
+
 		conn->in_connect = false;
 	}
 
@@ -5030,9 +5034,9 @@ void net_tcp_init(void)
 	int rto;
 #if defined(CONFIG_NET_TEST_PROTOCOL)
 	/* Register inputs for TTCN-3 based TCP sanity check */
-	test_cb_register(NET_AF_INET,  NET_NET_SOCK_STREAM, NET_IPPROTO_TCP,
+	test_cb_register(NET_AF_INET,  NET_SOCK_STREAM, NET_IPPROTO_TCP,
 			 4242, 4242, tcp_input);
-	test_cb_register(NET_AF_INET6, NET_NET_SOCK_STREAM, NET_IPPROTO_TCP,
+	test_cb_register(NET_AF_INET6, NET_SOCK_STREAM, NET_IPPROTO_TCP,
 			 4242, 4242, tcp_input);
 	test_cb_register(NET_AF_INET,  NET_SOCK_DGRAM, NET_IPPROTO_UDP,
 			 4242, 4242, tp_input);

@@ -79,6 +79,9 @@
 				erase-block-size = <DT_SIZE_K(8)>;  /* 8 KiB sectors */
 				write-block-size = <8>;             /* 8-byte min program unit */
 				status = "disabled";
+				ranges = <0x0 0x0 DT_SIZE_K(4048)>;
+				#address-cells = <1>;
+				#size-cells = <1>;
 			};
 		};
 
@@ -656,15 +659,19 @@
 			snps,multicast-filter-bins = <64>;
 			snps,perfect-filter-entries = <3>;
 			status = "disabled";
-		};
 
-		mdio0: mdio@40480200 {
-			reg = <0x40480200 0x8>;
-			compatible = "snps,dwmac-mdio";
-			clocks = <&clock NXP_S32_AIPS_PLAT_CLK>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-			status = "disabled";
+			mdio0: mdio {
+				compatible = "snps,dwmac-mdio";
+				clocks = <&clock NXP_S32_AIPS_PLAT_CLK>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+
+			ptp_clock: ptp-clock {
+				compatible = "snps,dwmac-ptp-clock";
+				status = "disabled";
+			};
 		};
 
 		edma0: dma-controller@4020c000 {

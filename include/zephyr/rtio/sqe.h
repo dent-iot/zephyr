@@ -1,7 +1,7 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2022 Intel Corporation
- * SPDX-FileCopyrightText: <text>Copyright (c) 2026 Infineon Technologies AG,
- * or an affiliate of Infineon Technologies AG. All rights reserved.</text>
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Infineon Technologies AG,
+ * SPDX-FileCopyrightText: or an affiliate of Infineon Technologies AG. All rights reserved.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -234,6 +234,11 @@ extern "C" {
  * @brief Equivalent to the I3C_MSG_NBCH
  */
 #define RTIO_IODEV_I3C_NBCH BIT(4)
+
+/**
+ * @brief Equivalent to the I3C_MSG_NOACK_EXPECTED
+ */
+#define RTIO_IODEV_I3C_NOACK_EXPECTED BIT(5)
 
 /**
  * @brief I3C HDR Mode Mask

@@ -1966,11 +1966,6 @@ static void address_expired(struct net_if_addr *ifaddr)
 	NET_DBG("IPv6 address %s is expired",
 		net_sprint_ipv6_addr(&ifaddr->address.in6_addr));
 
-	sys_slist_find_and_remove(&active_address_lifetime_timers,
-				  &ifaddr->lifetime.node);
-
-	net_timeout_set(&ifaddr->lifetime, 0, 0);
-
 	STRUCT_SECTION_FOREACH(net_if, iface) {
 		ARRAY_FOR_EACH(iface->config.ip.ipv6->unicast, i) {
 			if (&iface->config.ip.ipv6->unicast[i] == ifaddr) {
@@ -1987,8 +1982,11 @@ static void address_lifetime_timeout(struct k_work *work)
 	uint32_t next_update = UINT32_MAX;
 	uint32_t current_time = k_uptime_get_32();
 	struct net_if_addr *current, *next;
+	sys_slist_t expired_list;
 
 	ARG_UNUSED(work);
+
+	sys_slist_init(&expired_list);
 
 	k_mutex_lock(&lock, K_FOREVER);
 
@@ -1999,7 +1997,12 @@ static void address_lifetime_timeout(struct k_work *work)
 							     current_time);
 
 		if (this_update == 0U) {
-			address_expired(current);
+			sys_slist_find_and_remove(
+				&active_address_lifetime_timers,
+				&current->lifetime.node);
+			net_timeout_set(&current->lifetime, 0, 0);
+			sys_slist_append(&expired_list,
+					 &current->lifetime.node);
 			continue;
 		}
 
@@ -2019,6 +2022,15 @@ static void address_lifetime_timeout(struct k_work *work)
 	}
 
 	k_mutex_unlock(&lock);
+
+	/* address_expired() calls net_if_ipv6_addr_rm(), which takes the
+	 * interface lock. That lock is acquired before this one elsewhere, so
+	 * the removals must happen with this lock released.
+	 */
+	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&expired_list, current, next,
+					  lifetime.node) {
+		address_expired(current);
+	}
 }
 
 #if defined(CONFIG_NET_TEST)
@@ -6080,14 +6092,20 @@ static void remove_ipv6_ifaddr(struct net_if *iface,
 #if defined(CONFIG_NET_IPV6_DAD)
 	if (!net_if_flag_is_set(iface, NET_IF_IPV6_NO_ND)) {
 		k_mutex_lock(&lock, K_FOREVER);
-		if (sys_slist_find_and_remove(&active_dad_timers,
-					      &ifaddr->dad_node)) {
-			/* Address with active DAD timer would still have
-			 * stale entry in the neighbor cache.
-			 */
+		(void)sys_slist_find_and_remove(&active_dad_timers,
+						&ifaddr->dad_node);
+		k_mutex_unlock(&lock);
+
+		/* A tentative address still has the entry for itself that
+		 * the DAD solicitation left in the neighbour cache, so
+		 * remove it here. The address state is checked rather than
+		 * membership of active_dad_timers, because dad_timeout()
+		 * unlinks the address from that list before it processes it
+		 * with the lock released.
+		 */
+		if (ifaddr->addr_state == NET_ADDR_TENTATIVE) {
 			net_ipv6_nbr_rm(iface, &ifaddr->address.in6_addr);
 		}
-		k_mutex_unlock(&lock);
 	}
 #endif
 
@@ -6533,11 +6551,6 @@ static void update_operational_state(struct net_if *iface)
 		goto exit;
 	}
 
-	if (!device_is_ready(net_if_get_device(iface))) {
-		new_state = NET_IF_OPER_LOWERLAYERDOWN;
-		goto exit;
-	}
-
 	if (!net_if_is_carrier_ok(iface)) {
 #if defined(CONFIG_NET_L2_VIRTUAL)
 		if (net_if_l2(iface) == &NET_L2_GET_NAME(VIRTUAL)) {
@@ -6599,6 +6612,7 @@ static void init_igmp(struct net_if *iface)
 
 int net_if_up(struct net_if *iface)
 {
+	const struct device *dev;
 	int status = 0;
 
 	NET_DBG("iface %d (%p)", net_if_get_by_iface(iface), iface);
@@ -6610,30 +6624,19 @@ int net_if_up(struct net_if *iface)
 		goto out;
 	}
 
+	dev = net_if_get_device(iface);
+	NET_ASSERT(dev != NULL);
+
+	/* If the device is not ready it is pointless trying to take it up. */
+	if (!device_is_ready(dev)) {
+		NET_DBG("Device %s (%p) is not ready", dev->name, dev);
+		status = -ENXIO;
+		goto out;
+	}
+
 	/* If the L2 does not support enable just set the flag */
 	if (!net_if_l2(iface) || !net_if_l2(iface)->enable) {
 		goto done;
-	} else {
-		/* If the L2 does not implement enable(), then the network
-		 * device driver cannot implement start(), in which case
-		 * we can do simple check here and not try to bring interface
-		 * up as the device is not ready.
-		 *
-		 * If the network device driver does implement start(), then
-		 * it could bring the interface up when the enable() is called
-		 * few lines below.
-		 */
-		const struct device *dev;
-
-		dev = net_if_get_device(iface);
-		NET_ASSERT(dev);
-
-		/* If the device is not ready it is pointless trying to take it up. */
-		if (!device_is_ready(dev)) {
-			NET_DBG("Device %s (%p) is not ready", dev->name, dev);
-			status = -ENXIO;
-			goto out;
-		}
 	}
 
 	/* Notify L2 to enable the interface. Note that the interface is still down
