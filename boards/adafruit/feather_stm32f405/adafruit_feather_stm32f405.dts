@@ -36,7 +36,12 @@
 	};
 
 	led_strip: ws2812 {
-		status = "okay";
+		/* Enabled by the application (e.g. the led_strip sample),
+		 * together with &pulseio0: the pulse-io backend allocates a
+		 * large static DMA buffer, so it must not be forced on every
+		 * build for this board.
+		 */
+		status = "disabled";
 		compatible = "worldsemi,ws2812-pulse-io";
 		pulse-ios = <&pulseio0 0>;
 		chain-length = <1>;
@@ -53,20 +58,11 @@
 };
 
 &pulseio0 {
-	status = "okay";
 	/* PC0 = on-board NeoPixel data line; very high speed for the
-	 * 10 MHz bit-banged waveform.
+	 * 10 MHz bit-banged waveform. The board only assigns the pin;
+	 * enabling the node is left to the application.
 	 */
 	gpios = <&gpioc 0 (GPIO_ACTIVE_HIGH | STM32_GPIO_VERY_HIGH_SPEED)>;
-};
-
-&timers1 {
-	status = "okay";
-};
-
-/* Enable DMA2 (only DMA2 can reach GPIO on F405/407). */
-&dma2 {
-	status = "okay";
 };
 
 &clk_lsi {
