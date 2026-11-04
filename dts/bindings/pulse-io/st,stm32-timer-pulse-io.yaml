@@ -22,6 +22,10 @@ description: |
   all configured in the device tree, so the binding is not tied to a
   particular timer instance or pin.
 
+  While this node uses the timer, the timer's other child nodes (pwm,
+  counter, qdec) must remain disabled: they would compete for the same
+  timer instance.
+
 compatible: "st,stm32-timer-pulse-io"
 
 include: [base.yaml, pulse-io-controller.yaml]
@@ -63,14 +67,18 @@ properties:
     type: int
     default: 0
     description: |
-      Timer prescaler value loaded into TIMx_PSC. The backend configures
-      the auto-reload register from the requested resolution; the
-      prescaler is left to the integrator so the timer clock can be divided
-      to a sane range (e.g. keep ARR > 1 for the desired tick).
+      Timer prescaler value loaded into TIMx_PSC. Must be in the range
+      0..65535 to fit the 16-bit TIMx_PSC register (enforced at build
+      time). The backend configures the auto-reload register from the
+      requested resolution; the prescaler is left to the integrator so
+      the timer clock can be divided to a sane range (e.g. keep ARR > 1
+      for the desired tick).
 
   buffer-size:
     type: int
-    required: true
+    default: 0
     description: |
       Maximum number of DMA words (uint32_t) the channel can transmit in a
-      single submission. One word is necessary per cell.
+      single submission. One word is written per cell tick. The default of
+      0 selects the build-time default of 4096 words, which fits about 13
+      WS2812 pixels (24 bits x 13 words per bit).

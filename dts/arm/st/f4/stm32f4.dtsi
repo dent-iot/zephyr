@@ -361,8 +361,9 @@
 				/*
 				 * TIM1 is on APB2 at 168 MHz. With prescaler 0 the timer
 				 * ticks at 168 MHz; for a 10 MHz resolution the backend
-				 * programs ARR = 16, giving ~10.5 MHz per cell tick
-				 * (close enough to ws2812_pulse_io's 10 MHz assumption).
+				 * programs ARR = 15 (the period is ARR+1 ticks), giving
+				 * 168/16 = 10.5 MHz per cell tick (close enough to
+				 * ws2812_pulse_io's 10 MHz assumption).
 				 */
 				st,prescaler = <0>;
 				buffer-size = <4096>;

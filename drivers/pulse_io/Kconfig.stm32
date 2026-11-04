@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Dent IoT
 # SPDX-License-Identifier: Apache-2.0
 
-config PULSE_IO_STM32_TIMER_DMA
+config PULSE_IO_STM32_TIMER
 	bool "STM32 Pulse IO backend (timer + DMA to GPIO)"
 	default y
 	depends on DT_HAS_ST_STM32_TIMER_PULSE_IO_ENABLED
