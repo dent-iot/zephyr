@@ -366,7 +366,9 @@
 				 * ws2812_pulse_io's 10 MHz assumption).
 				 */
 				st,prescaler = <0>;
-				buffer-size = <4096>;
+				/* buffer-size defaults to the build-time default;
+				 * boards override it to match their chain length.
+				 */
 				status = "disabled";
 			};
 		};
