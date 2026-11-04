@@ -7,6 +7,11 @@
 /dts-v1/;
 #include <st/f4/stm32f405Xg.dtsi>
 #include <st/f4/stm32f405rgtx-pinctrl.dtsi>
+
+#include <zephyr/dt-bindings/led/led.h>
+#include <zephyr/dt-bindings/dma/stm32_dma.h>
+#include <zephyr/dt-bindings/gpio/stm32-gpio.h>
+
 #include "feather_connector.dtsi"
 
 / {
@@ -30,9 +35,39 @@
 		};
 	};
 
+	led_strip: ws2812 {
+		/* Enabled by the application (e.g. the led_strip sample),
+		 * together with &pulseio0: the pulse-io backend allocates a
+		 * large static DMA buffer, so it must not be forced on every
+		 * build for this board.
+		 */
+		status = "disabled";
+		compatible = "worldsemi,ws2812-pulse-io";
+		pulse-ios = <&pulseio0 0>;
+		chain-length = <1>;
+		color-mapping = <LED_COLOR_ID_GREEN
+				 LED_COLOR_ID_RED
+				 LED_COLOR_ID_BLUE>;
+		reset-delay = <300>;
+	};
+
 	aliases {
 		led0 = &led;
+		led-strip = &led_strip;
 	};
+};
+
+&pulseio0 {
+	/* PC0 = on-board NeoPixel data line; very high speed for the
+	 * 10 MHz bit-banged waveform. The board only assigns the pin and
+	 * sizes the buffer; enabling the node is left to the application.
+	 */
+	gpios = <&gpioc 0 (GPIO_ACTIVE_HIGH | STM32_GPIO_VERY_HIGH_SPEED)>;
+
+	/* One on-board WS2812: 24 bits x 13 words per bit (1 word per cell
+	 * tick at the 10 MHz resolution) = 312 words = 1248 bytes.
+	 */
+	buffer-size = <312>;
 };
 
 &clk_lsi {

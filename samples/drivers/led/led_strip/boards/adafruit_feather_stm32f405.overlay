@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2026 Dent IoT
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Drives the on-board WS2812 (NeoPixel) on the Adafruit Feather STM32F405
+ * Express. The NeoPixel data line is on PC0, which has no usable alternate
+ * functions, so it is driven by the STM32 pulse_io backend using a timer
+ * update event triggering DMA writes to GPIOC->BSRR. No pin AF is needed.
+ *
+ * Timer: TIM1 (APB2, 168 MHz). TIM1_UP routes to DMA2 stream5/channel6.
+ * DMA2 (unlike DMA1 on F405/407) can reach the GPIO AHB1 port.
+ *
+ * Enabling is done here, by the user of the board, rather than in the board
+ * dts: the pulse-io node allocates a large static DMA buffer, so it must
+ * not be forced on every build for this board.
+ */
+
+&timers1 {
+	status = "okay";
+};
+
+&pulseio0 {
+	status = "okay";
+};
+
+/* Enable DMA2 (only DMA2 can reach GPIO on F405/407). */
+&dma2 {
+	status = "okay";
+};
+
+&led_strip {
+	status = "okay";
+};
