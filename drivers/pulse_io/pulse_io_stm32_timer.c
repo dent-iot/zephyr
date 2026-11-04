@@ -6,9 +6,18 @@
 
 /**
  * @file pulse_io_stm32_timer.c
- * STM32 Pulse IO backend: a timer update event triggers a DMA transfer of
- * set/reset words to a GPIO port's BSRR register, generating timed edges on
- * an arbitrary GPIO pin.
+ * STM32 Pulse IO backend, SYMBOL mode with two DMA streams:
+ *
+ *  - stream "tx": circular 2-word buffer (BSRR set/reset pair) -> GPIO BSRR.
+ *    The pin toggles once per timer update period, so each timer period is
+ *    one symbol with alternating level.
+ *  - stream "arr": linear buffer with one word per symbol -> TIMx_ARR. Each
+ *    word sets the length of the next timer period (ARR+1 ticks), i.e. the
+ *    symbol duration.
+ *
+ * Both streams are triggered by the same timer update event, so one DMA word
+ * per stream is consumed per period and the buffer needs only ~1 word per
+ * symbol instead of one word per tick.
  */
 
 #include <stdint.h>
@@ -38,7 +47,7 @@
 
 LOG_MODULE_REGISTER(pulse_io_stm32_timer, CONFIG_PULSE_IO_LOG_LEVEL);
 
-#define PULSE_IO_STM32_DEFAULT_BUFSZ 4096
+#define PULSE_IO_STM32_DEFAULT_BUFSZ 256
 
 /* buffer-size = 0 selects the build-time default. */
 #define PULSE_IO_STM32_BUFSZ(inst)                                                                \
@@ -51,15 +60,27 @@ LOG_MODULE_REGISTER(pulse_io_stm32_timer, CONFIG_PULSE_IO_LOG_LEVEL);
 #define PULSE_IO_STM32_BUF_ALIGN sizeof(uint32_t)
 #endif
 
+/* One timer period per symbol: an ARR word written by DMA at update event
+ * E_k only becomes the reload value at E_{k+1}, so it sets the length of the
+ * period starting at E_{k+2}. The first symbol's period is therefore covered
+ * by the two leading dummy periods whose length is written directly before
+ * the counter starts, and two trailing dummy words keep the ARR stream alive
+ * until the last symbol's period has completed.
+ */
+#define PULSE_IO_STM32_PIPE_DUMMY_WORDS 2
+
 struct pulse_io_stm32_config {
 	TIM_TypeDef *timer;
 	const struct stm32_pclken *pclken;
 	size_t pclk_len;
 	uint32_t prescaler;
 	const struct device *dma_dev;
-	uint32_t dma_channel;
-	uint32_t dma_slot;
-	uint32_t dma_priority;
+	uint32_t dma_channel_tx;
+	uint32_t dma_slot_tx;
+	uint32_t dma_priority_tx;
+	uint32_t dma_channel_arr;
+	uint32_t dma_slot_arr;
+	uint32_t dma_priority_arr;
 	struct gpio_dt_spec gpio;
 	volatile uint32_t *bsrr;
 	uint16_t mask;
@@ -78,13 +99,15 @@ struct pulse_io_stm32_data {
 	struct k_spinlock busy_spinlock;
 	bool busy;
 	enum pulse_io_dir dir;
-	uint32_t cell_period_ticks;
 	uint32_t resolution_hz;
 	bool idle_high;
 	struct pulse_io_stm32_channel chan;
+	uint32_t bsrr_pattern[2];
 	uint32_t *buf;
-	struct dma_block_config block;
-	struct dma_config dma_cfg;
+	struct dma_block_config block_tx;
+	struct dma_block_config block_arr;
+	struct dma_config dma_cfg_tx;
+	struct dma_config dma_cfg_arr;
 };
 
 static inline uint32_t set_mask(const struct pulse_io_stm32_config *config)
@@ -151,7 +174,7 @@ static int pulse_io_stm32_get_capabilities(const struct device *dev,
 
 	uint32_t min_tick = 1000000000LU * (uint64_t)(config->prescaler + 1U) / (uint64_t)tim_clk;
 	/* One timer tick is min_tick ns; the 16-bit ARR allows at most
-	 * 0x10000 ticks per update period.
+	 * 0x10000 ticks per period, and each period is one symbol.
 	 */
 	uint64_t max_tick64 = (uint64_t)min_tick * 0x10000U;
 	uint32_t max_tick = max_tick64 > UINT32_MAX ? UINT32_MAX : (uint32_t)max_tick64;
@@ -159,20 +182,17 @@ static int pulse_io_stm32_get_capabilities(const struct device *dev,
 	*caps = (struct pulse_io_caps){
 		.tx_min_chunk_symbols = 1U,
 		.tx_max_streaming = config->buf_size,
-		/* Symbol mode is possible by dma-ing data from a 2 int ring buffer
-		 * and using a second dma to feed the ARR. This is also not implemented.
-		 */
-		.modes = PULSE_IO_MODE_CELL,
+		.modes = PULSE_IO_MODE_SYMBOL,
 		.min_tick_ns = min_tick,
 		.max_tick_ns = max_tick,
-		.max_duration_ticks = 0,
+		.max_duration_ticks = 0x10000U,
 		.tx_loop_max = 0U,
 		.tx_channel_mask = BIT(0),
 		.rx_channel_mask = 0U,
-		.cell_duty_bits = 16U,
+		.cell_duty_bits = 0U,
 		.num_channels = 1U,
 		.supports_tx = true,
-		/* Rx is possble, but not implemented */
+		/* Rx is possible, but not implemented */
 		.supports_rx = false,
 	};
 
@@ -207,7 +227,8 @@ static int pulse_io_stm32_stop_locked(const struct device *dev)
 	struct pulse_io_stm32_data *data = dev->data;
 
 	if (data->busy) {
-		(void)dma_stop(config->dma_dev, config->dma_channel);
+		(void)dma_stop(config->dma_dev, config->dma_channel_tx);
+		(void)dma_stop(config->dma_dev, config->dma_channel_arr);
 		LL_TIM_DisableDMAReq_UPDATE(config->timer);
 		LL_TIM_DisableCounter(config->timer);
 		data->busy = false;
@@ -268,12 +289,8 @@ static int pulse_io_stm32_channel_configure(const struct device *dev,
 		return -ENOTSUP;
 	}
 
-	if (cfg->mode != PULSE_IO_MODE_CELL) {
+	if (cfg->mode != PULSE_IO_MODE_SYMBOL) {
 		return -ENOTSUP;
-	}
-
-	if (cfg->cell_period_ticks == 0U || cfg->cell_period_ticks > 0xFFFFU) {
-		return -EINVAL;
 	}
 
 	if (cfg->resolution_hz == 0U) {
@@ -298,10 +315,9 @@ static int pulse_io_stm32_channel_configure(const struct device *dev,
 		return ret;
 	}
 
-	/* The timer update-DMA request fires every (PSC+1)*(ARR+1) timer
-	 * ticks, so the per-tick frequency is tim_clk / ((PSC+1)*(ARR+1)).
-	 * Solve for ARR given the requested resolution and the configured
-	 * prescaler: the period is ARR+1 ticks.
+	/* The timer update event fires every (PSC+1)*(ARR+1) timer ticks, so
+	 * the per-tick frequency is tim_clk / ((PSC+1)*(ARR+1)). Solve for ARR
+	 * given the requested resolution: the period is ARR+1 ticks.
 	 */
 	tick_freq = (uint64_t)tim_clk / (uint64_t)(config->prescaler + 1U);
 	if (tick_freq < cfg->resolution_hz) {
@@ -331,6 +347,9 @@ static int pulse_io_stm32_channel_configure(const struct device *dev,
 
 	pulse_io_stm32_set_idle(dev, cfg->idle_high);
 	LL_TIM_SetPrescaler(timer, config->prescaler);
+	/* Nominal period for the leading pipeline dummy periods; the real
+	 * per-symbol periods are fed by the "arr" DMA stream.
+	 */
 	LL_TIM_SetAutoReload(timer, arr);
 	if (IS_TIM_COUNTER_MODE_SELECT_INSTANCE(timer)) {
 		LL_TIM_SetCounterMode(timer, LL_TIM_COUNTERMODE_UP);
@@ -347,7 +366,6 @@ static int pulse_io_stm32_channel_configure(const struct device *dev,
 	/* Generate an update event to immediately load PSC/ARR. */
 	LL_TIM_GenerateEvent_UPDATE(timer);
 
-	data->cell_period_ticks = cfg->cell_period_ticks;
 	data->resolution_hz = (uint32_t)(tick_freq / (arr + 1U));
 	data->idle_high = cfg->idle_high;
 	data->dir = cfg->dir;
@@ -376,7 +394,9 @@ static void pulse_io_stm32_dma_callback(const struct device *dma_dev,
 		data->result = 0;
 	}
 
-	/* Stop the timer and its update-DMA request. */
+	/* The "arr" stream finished: the last symbol's period has completed.
+	 * Stop the timer and its update-DMA request.
+	 */
 	LL_TIM_DisableDMAReq_UPDATE(config->timer);
 	LL_TIM_DisableCounter(config->timer);
 	K_SPINLOCK(&data->busy_spinlock) {
@@ -389,44 +409,62 @@ static void pulse_io_stm32_dma_callback(const struct device *dma_dev,
 	k_sem_give(&data->done);
 }
 
-/* Expand a CELL-mode stream into BSRR set/reset words. Returns the number
- * of words written, or 0 on overflow.
+/* Encode a SYMBOL-mode stream into per-symbol ARR words. Consecutive symbols
+ * with the same level are merged (the circular BSRR pattern forces the level
+ * to alternate every period). Returns the number of words written to buf
+ * (merged symbol count + pipeline dummy words), or 0 on overflow.
  */
 static size_t pulse_io_stm32_encode(const struct device *dev,
-				    const struct pulse_cell *cells, size_t count,
+				    const struct pulse_symbol *symbols, size_t count,
 				    uint32_t *buf, size_t cap)
 {
-	const struct pulse_io_stm32_config *config = dev->config;
-	struct pulse_io_stm32_data *data = dev->data;
 	size_t n = 0U;
-	uint32_t period = data->cell_period_ticks;
-	uint32_t high = high_word(config);
-	uint32_t low = low_word(config);
+
+	/* cap must hold one word per merged symbol plus the trailing dummies. */
+	if (count + PULSE_IO_STM32_PIPE_DUMMY_WORDS > cap) {
+		LOG_ERR("DMA buffer overflow (%zu symbols, cap %zu)"
+			"(need more buffer-size)", count, cap);
+		return 0U;
+	}
 
 	for (size_t i = 0U; i < count; i++) {
-		uint32_t duty = cells[i].duty;
-		uint32_t low_ticks;
+		uint32_t duration = symbols[i].duration;
 
-		if (duty > period) {
-			duty = period;
+		if (duration == 0U) {
+			duration = 1U;
 		}
-		low_ticks = period - duty;
-
-		/* A whole cell (duty + low) must fit; report overflow if not. */
-		if (n + period > cap) {
-			LOG_ERR("DMA buffer overflow at cell %zu "
-				"(need more buffer-size)", i);
+		if (duration > 0x10000U) {
+			LOG_ERR("symbol %zu duration %u exceeds 16-bit ARR"
+				" (max %u ticks)", i, symbols[i].duration, 0x10000U);
 			return 0U;
 		}
 
-		for (uint32_t t = 0U; t < duty; t++) {
-			buf[n++] = high;
+		/* Merge with the previous symbol if the level did not change:
+		 * the circular BSRR pattern forces the level to alternate every
+		 * period, so runs of equal level must be coalesced.
+		 */
+		if (n > 0U && symbols[i].level == symbols[i - 1].level) {
+			uint32_t merged = buf[n - 1] + 1U + duration - 1U;
+
+			if (merged > 0xFFFFU) {
+				LOG_ERR("merged symbol duration exceeds 16-bit ARR");
+				return 0U;
+			}
+			buf[n - 1] = merged;
+			continue;
 		}
-		for (uint32_t t = 0U; t < low_ticks; t++) {
-			buf[n++] = low;
-		}
+
+		buf[n++] = duration - 1U;
 	}
 
+	/* Trailing dummy words so the ARR stream's completion callback fires
+	 * only after the last symbol's period has fully elapsed.
+	 */
+	for (size_t i = 0U; i < PULSE_IO_STM32_PIPE_DUMMY_WORDS; i++) {
+		buf[n++] = 0U;
+	}
+
+	ARG_UNUSED(dev);
 	return n;
 }
 
@@ -446,7 +484,7 @@ static int pulse_io_stm32_transmit_sync(const struct device *dev,
 		return ret;
 	}
 
-	if (!data->configured || req == NULL || req->cells == NULL ||
+	if (!data->configured || req == NULL || req->symbols == NULL ||
 	    req->count == 0U) {
 		return -EINVAL;
 	}
@@ -455,57 +493,102 @@ static int pulse_io_stm32_transmit_sync(const struct device *dev,
 		return -ENOTSUP;
 	}
 
-	words = pulse_io_stm32_encode(dev, req->cells, req->count,
+	words = pulse_io_stm32_encode(dev, req->symbols, req->count,
 				     data->buf, config->buf_size);
 	if (words == 0U) {
 		return -ENOMEM;
 	}
 
+	/* The circular BSRR pattern: word 0 drives the leading pipeline dummy
+	 * period (idle level), word 1 the first symbol; the level then
+	 * alternates every period. Merging in encode() guarantees the symbol
+	 * levels strictly alternate, matching this pattern.
+	 */
+	uint32_t first_level = req->symbols[0].level;
+
+	data->bsrr_pattern[0] = (first_level != 0U) ? low_word(config) : high_word(config);
+	data->bsrr_pattern[1] = (first_level != 0U) ? high_word(config) : low_word(config);
+
 	k_sem_reset(&data->done);
 
 	/* Make sure the DMA engine sees the encoded buffer on cached cores. */
 	sys_cache_data_flush_range(data->buf, words * sizeof(uint32_t));
+	sys_cache_data_flush_range(data->bsrr_pattern, sizeof(data->bsrr_pattern));
 
-	/* Arm the DMA transfer: memory -> BSRR, 32-bit, memory increment,
-	 * peripheral fixed. The DMA is triggered by the timer update event.
-	 */
-	memset(&data->block, 0, sizeof(data->block));
-	data->block.source_address = (uint32_t)(uintptr_t)data->buf;
-	data->block.dest_address   = (uint32_t)(uintptr_t)config->bsrr;
-	data->block.block_size = words * sizeof(uint32_t);
-	data->block.source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
-	data->block.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+	/* Stream "tx": circular, 2 words, memory -> BSRR. */
+	memset(&data->block_tx, 0, sizeof(data->block_tx));
+	data->block_tx.source_address = (uint32_t)(uintptr_t)data->bsrr_pattern;
+	data->block_tx.dest_address   = (uint32_t)(uintptr_t)config->bsrr;
+	data->block_tx.block_size = sizeof(data->bsrr_pattern);
+	data->block_tx.source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+	data->block_tx.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 
-	memset(&data->dma_cfg, 0, sizeof(data->dma_cfg));
-	data->dma_cfg.dma_slot = config->dma_slot;
-	data->dma_cfg.channel_direction = MEMORY_TO_PERIPHERAL;
-	data->dma_cfg.channel_priority = config->dma_priority;
-	data->dma_cfg.source_data_size = sizeof(uint32_t);
-	data->dma_cfg.dest_data_size = sizeof(uint32_t);
-	data->dma_cfg.source_burst_length = sizeof(uint32_t);
-	data->dma_cfg.dest_burst_length = sizeof(uint32_t);
-	data->dma_cfg.block_count = 1U;
-	data->dma_cfg.head_block = &data->block;
-	data->dma_cfg.dma_callback = pulse_io_stm32_dma_callback;
-	data->dma_cfg.user_data = (void *)dev;
+	memset(&data->dma_cfg_tx, 0, sizeof(data->dma_cfg_tx));
+	data->dma_cfg_tx.dma_slot = config->dma_slot_tx;
+	data->dma_cfg_tx.channel_direction = MEMORY_TO_PERIPHERAL;
+	data->dma_cfg_tx.channel_priority = config->dma_priority_tx;
+	data->dma_cfg_tx.source_data_size = sizeof(uint32_t);
+	data->dma_cfg_tx.dest_data_size = sizeof(uint32_t);
+	data->dma_cfg_tx.source_burst_length = sizeof(uint32_t);
+	data->dma_cfg_tx.dest_burst_length = sizeof(uint32_t);
+	data->dma_cfg_tx.block_count = 1U;
+	data->dma_cfg_tx.head_block = &data->block_tx;
+	/* Circular mode comes from STM32_DMA_MODE_CYCLIC in the DT cell. */
+	data->dma_cfg_tx.dma_callback = NULL;
+	data->dma_cfg_tx.user_data = NULL;
 
-	ret = dma_config(config->dma_dev, config->dma_channel, &data->dma_cfg);
+	/* Stream "arr": linear, one word per symbol, memory -> TIMx_ARR. */
+	memset(&data->block_arr, 0, sizeof(data->block_arr));
+	data->block_arr.source_address = (uint32_t)(uintptr_t)data->buf;
+	data->block_arr.dest_address   = (uint32_t)(uintptr_t)&config->timer->ARR;
+	data->block_arr.block_size = words * sizeof(uint32_t);
+	data->block_arr.source_addr_adj = DMA_ADDR_ADJ_INCREMENT;
+	data->block_arr.dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
+
+	memset(&data->dma_cfg_arr, 0, sizeof(data->dma_cfg_arr));
+	data->dma_cfg_arr.dma_slot = config->dma_slot_arr;
+	data->dma_cfg_arr.channel_direction = MEMORY_TO_PERIPHERAL;
+	data->dma_cfg_arr.channel_priority = config->dma_priority_arr;
+	data->dma_cfg_arr.source_data_size = sizeof(uint32_t);
+	data->dma_cfg_arr.dest_data_size = sizeof(uint32_t);
+	data->dma_cfg_arr.source_burst_length = sizeof(uint32_t);
+	data->dma_cfg_arr.dest_burst_length = sizeof(uint32_t);
+	data->dma_cfg_arr.block_count = 1U;
+	data->dma_cfg_arr.head_block = &data->block_arr;
+	data->dma_cfg_arr.dma_callback = pulse_io_stm32_dma_callback;
+	data->dma_cfg_arr.user_data = (void *)dev;
+
+	ret = dma_config(config->dma_dev, config->dma_channel_tx, &data->dma_cfg_tx);
 	if (ret != 0) {
-		LOG_ERR("dma_config failed (%d)", ret);
-		/* dma_config may have marked the stream busy; release it. */
-		(void)dma_stop(config->dma_dev, config->dma_channel);
+		LOG_ERR("dma_config(tx) failed (%d)", ret);
+		(void)dma_stop(config->dma_dev, config->dma_channel_tx);
+		return ret;
+	}
+	ret = dma_config(config->dma_dev, config->dma_channel_arr, &data->dma_cfg_arr);
+	if (ret != 0) {
+		LOG_ERR("dma_config(arr) failed (%d)", ret);
+		(void)dma_stop(config->dma_dev, config->dma_channel_tx);
+		(void)dma_stop(config->dma_dev, config->dma_channel_arr);
 		return ret;
 	}
 
-	ret = dma_start(config->dma_dev, config->dma_channel);
+	ret = dma_start(config->dma_dev, config->dma_channel_tx);
 	if (ret != 0) {
-		LOG_ERR("dma_start failed (%d)", ret);
-		(void)dma_stop(config->dma_dev, config->dma_channel);
+		LOG_ERR("dma_start(tx) failed (%d)", ret);
+		(void)dma_stop(config->dma_dev, config->dma_channel_tx);
+		(void)dma_stop(config->dma_dev, config->dma_channel_arr);
+		return ret;
+	}
+	ret = dma_start(config->dma_dev, config->dma_channel_arr);
+	if (ret != 0) {
+		LOG_ERR("dma_start(arr) failed (%d)", ret);
+		(void)dma_stop(config->dma_dev, config->dma_channel_tx);
+		(void)dma_stop(config->dma_dev, config->dma_channel_arr);
 		return ret;
 	}
 
-	/* Enable the timer update-DMA request and start the counter; the
-	 * first update event triggers the first DMA word.
+	/* Enable the timer update-DMA request and start the counter; each
+	 * update event triggers one word on both streams.
 	 */
 	K_SPINLOCK(&data->busy_spinlock)
 	{
@@ -525,7 +608,8 @@ static int pulse_io_stm32_transmit_sync(const struct device *dev,
 			/* The DMA completed just as the timeout expired. */
 			return data->result;
 		}
-		(void)dma_stop(config->dma_dev, config->dma_channel);
+		(void)dma_stop(config->dma_dev, config->dma_channel_tx);
+		(void)dma_stop(config->dma_dev, config->dma_channel_arr);
 		LL_TIM_DisableDMAReq_UPDATE(config->timer);
 		LL_TIM_DisableCounter(config->timer);
 		K_SPINLOCK(&data->busy_spinlock)
@@ -659,10 +743,14 @@ static int pulse_io_stm32_init(const struct device *dev)
 		.pclk_len = DT_NUM_CLOCKS(DT_INST_PARENT(inst)),                    \
 		.prescaler = DT_INST_PROP(inst, st_prescaler),                     \
 		.dma_dev = DEVICE_DT_GET(DT_INST_DMAS_CTLR_BY_NAME(inst, tx)),      \
-		.dma_channel = DT_INST_DMAS_CELL_BY_NAME(inst, tx, channel),        \
-		.dma_slot = DT_INST_DMAS_CELL_BY_NAME(inst, tx, slot),              \
-		.dma_priority = STM32_DMA_CONFIG_PRIORITY(                          \
+		.dma_channel_tx = DT_INST_DMAS_CELL_BY_NAME(inst, tx, channel),    \
+		.dma_slot_tx = DT_INST_DMAS_CELL_BY_NAME(inst, tx, slot),          \
+		.dma_priority_tx = STM32_DMA_CONFIG_PRIORITY(                      \
 			DT_INST_DMAS_CELL_BY_NAME(inst, tx, channel_config)),       \
+		.dma_channel_arr = DT_INST_DMAS_CELL_BY_NAME(inst, arr, channel),  \
+		.dma_slot_arr = DT_INST_DMAS_CELL_BY_NAME(inst, arr, slot),        \
+		.dma_priority_arr = STM32_DMA_CONFIG_PRIORITY(                     \
+			DT_INST_DMAS_CELL_BY_NAME(inst, arr, channel_config)),      \
 		.gpio = GPIO_DT_SPEC_INST_GET(inst, gpios),                         \
 		.bsrr = (volatile uint32_t *)                                       \
 			&((GPIO_TypeDef *)DT_REG_ADDR(DT_GPIO_CTLR(                 \

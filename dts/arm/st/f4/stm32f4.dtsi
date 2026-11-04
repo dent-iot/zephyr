@@ -344,19 +344,34 @@
 				status = "disabled";
 			};
 
-			/* STM32 pulse_io channel: TIM1 update -> DMA2 -> GPIOC BSRR (PC0) */
+			/* STM32 pulse_io channel: TIM1 update -> DMA2 streams ->
+			 * GPIOC BSRR (PC0) and TIM1 ARR (symbol mode)
+			 */
 			pulseio0: pulse-io-0 {
 				compatible = "st,stm32-timer-pulse-io";
 				#pulse-io-cells = <1>;
 				timer = <&timers1>;
+				/* Both streams listen to TIM1_UP (DMA2 channel 6):
+				 * "tx" feeds GPIOC BSRR from a circular 2-word
+				 * pattern, "arr" feeds TIM1 ARR with one word per
+				 * symbol.
+				 */
 				dmas = <&dma2 5 6
+					(STM32_DMA_MEMORY_TO_PERIPH |
+					 STM32_DMA_MEM_INC |
+					 STM32_DMA_PERIPH_32BITS |
+					 STM32_DMA_MEM_32BITS |
+					 STM32_DMA_PRIORITY_HIGH |
+					 STM32_DMA_MODE_CYCLIC)
+					0>,
+					<&dma2 6 6
 					(STM32_DMA_MEMORY_TO_PERIPH |
 					 STM32_DMA_MEM_INC |
 					 STM32_DMA_PERIPH_32BITS |
 					 STM32_DMA_MEM_32BITS |
 					 STM32_DMA_PRIORITY_HIGH)
 					0>;
-				dma-names = "tx";
+				dma-names = "tx", "arr";
 
 				/*
 				 * TIM1 is on APB2 at 168 MHz. With prescaler 0 the timer

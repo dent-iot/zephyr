@@ -3,18 +3,25 @@
 # SPDX-License-Identifier: Apache-2.0
 
 description: |
-  STM32 Pulse IO channel (timer + DMA-to-GPIO).
+  STM32 Pulse IO channel, SYMBOL mode (timer + two DMA streams).
 
   A vendor Pulse IO backend that generates jitter-free timed edges on an
-  arbitrary GPIO pin using a timer's update event to trigger a DMA transfer
-  of set/reset words to the GPIO port's BSRR register.
+  arbitrary GPIO pin in SYMBOL mode. Each timer update event triggers one
+  DMA word on each of two streams, both mapped to the same timer update
+  DMA request:
 
-  One node describes a single channel: one timer instance, one DMA stream,
-  and one target GPIO pin. The node is a Pulse IO controller exposing a
-  single channel (index 0); a consumer such as worldsemi,ws2812-pulse-io
-  references it with `pulse-ios = <&node 0>`. To drive multiple strips on
-  multiple pins, instantiate several such nodes, each with its own timer
-  and DMA stream so the transfers can run concurrently.
+  - "tx": a circular 2-word buffer of BSRR set/reset words written to the
+    GPIO port's BSRR register, toggling the pin once per timer period.
+  - "arr": a linear buffer of one word per symbol written to the timer's
+    ARR register, setting the length (ARR+1 ticks) of the next period,
+    i.e. the symbol duration.
+
+  One node describes a single channel: one timer instance, two DMA
+  streams, and one target GPIO pin. The node is a Pulse IO controller
+  exposing a single channel (index 0); a consumer references it with
+  `pulse-ios = <&node 0>`. To drive multiple strips on multiple pins,
+  instantiate several such nodes, each with its own timer and DMA streams
+  so the transfers can run concurrently.
 
   The pin needs no alternate function: the wire is driven by writing the
   GPIO port's set/reset register (BSRR) via DMA, which works on any pin.
@@ -43,16 +50,20 @@ properties:
     type: phandle-array
     required: true
     description: |
-      DMA channel/stream specifier for the timer's update-DMA request, in
+      DMA channel/stream specifiers for the timer's update-DMA request, in
       the SoC's dma-controller cell format. For st,stm32-dma-v1 this is
       four cells: channel, slot (the TIMx_UP DMA request id),
       channel-config (STM32_DMA_* flags: memory-to-peripheral, memory
-      increment, 32-bit width), and features.
+      increment, 32-bit width), and features. Both streams must select the
+      same DMA request (slot) so that each update event triggers one word
+      on each stream. The "tx" stream should set STM32_DMA_MODE_CYCLIC.
 
   dma-names:
     type: string-array
     required: true
-    description: Must contain "tx".
+    description: |
+      Must contain "tx" (circular BSRR pattern stream) and "arr" (linear
+      per-symbol TIMx_ARR stream).
 
   gpios:
     type: phandle-array
@@ -79,6 +90,6 @@ properties:
     default: 0
     description: |
       Maximum number of DMA words (uint32_t) the channel can transmit in a
-      single submission. One word is written per cell tick. The default of
-      0 selects the build-time default of 4096 words, which fits about 13
-      WS2812 pixels (24 bits x 13 words per bit).
+      single submission. One word is written per symbol (plus two pipeline
+      dummy words). The default of 0 selects the build-time default of 256
+      words, which fits about 5 WS2812 pixels (24 bits x 2 symbols per bit).

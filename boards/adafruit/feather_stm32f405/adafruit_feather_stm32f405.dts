@@ -64,10 +64,10 @@
 	 */
 	gpios = <&gpioc 0 (GPIO_ACTIVE_HIGH | STM32_GPIO_VERY_HIGH_SPEED)>;
 
-	/* One on-board WS2812: 24 bits x 13 words per bit (1 word per cell
-	 * tick at the 10 MHz resolution) = 312 words = 1248 bytes.
+	/* One on-board WS2812: 24 bits x 2 symbols per bit (1 ARR word per
+	 * symbol) = 48 words, plus pipeline dummy words; round up to 64.
 	 */
-	buffer-size = <312>;
+	buffer-size = <64>;
 };
 
 &clk_lsi {

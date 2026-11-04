@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 config PULSE_IO_STM32_TIMER
-	bool "STM32 Pulse IO backend (timer + DMA to GPIO)"
+	bool "STM32 Pulse IO backend (timer + 2x DMA to GPIO/ARR)"
 	default y
 	depends on DT_HAS_ST_STM32_TIMER_PULSE_IO_ENABLED
 	select DMA
 	select GPIO
 	help
-	  Pulse IO backend for STM32 that generates timed edges on an
-	  arbitrary GPIO pin by driving the GPIO port's BSRR register via
-	  DMA, triggered by a timer update event.
+	  Pulse IO backend for STM32 (SYMBOL mode) that generates timed edges
+	  on an arbitrary GPIO pin. Each timer update event triggers one DMA
+	  word on two streams: a circular 2-word pattern to the GPIO port's
+	  BSRR register (toggling the pin per period) and a linear per-symbol
+	  word to the timer's ARR register (setting each period's length).
